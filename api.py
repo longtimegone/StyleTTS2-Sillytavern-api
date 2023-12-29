@@ -164,11 +164,11 @@ def serve_wav():
     # Extract additional variables with default values if not present
     alpha_form = request.form.get('alpha', '.3')
     alpha_float = float(alpha_form)
-    beta_form = request.form.get('beta', '.1')
+    beta_form = request.form.get('beta', '.5')
     beta_float = float(beta_form)
-    diffusion_steps_form = request.form.get('diffusion_steps', '5')
+    diffusion_steps_form = request.form.get('diffusion_steps', '15')
     diffusion_steps_int = int(diffusion_steps_form)
-    embedding_scale_form = request.form.get('embedding_scale', '1')
+    embedding_scale_form = request.form.get('embedding_scale', '2')
     embedding_scale_float = float(embedding_scale_form)
 
     if not voice in voices:
