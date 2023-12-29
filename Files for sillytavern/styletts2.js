@@ -81,7 +81,7 @@ class StyleTtsProvider {
         html += `
 
         <span>
-        <span>Use <a target="_blank" href="https://github.com/daswer123/xtts-api-server">StyleTTSv2 TTS Server</a>.</span>
+        <span>Use <a target="_blank" href="https://github.com/longtimegone/StyleTTS2-Sillytavern-api">StyleTTSv2 TTS Server</a>.</span>
         `;
 
         return html;
