@@ -1,1 +1,1 @@
-gpu_device_id: 1 #999 to disable
+gpu_device_id: 0 #999 to disable
