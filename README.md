@@ -6,7 +6,7 @@ The one addition you will need to make is adding two files to your sillytavern i
 
 I'm currently running this on an old 970 with 4gb of memory, and on this old hardware it generates audio around 20-30x faster than listening speed. It was about 60x listening speed when running on my 3080(About 10 seconds to generate a ten minute clip). 
 
------- Original Readme ---------------------------------------------------------------------------------------------------------------------------
+------ Original Readme --------------------------------------------------------------------------------------------
 
 # StyleTTS 2: Towards Human-Level Text-to-Speech through Style Diffusion and Adversarial Training with Large Speech Language Models
 
