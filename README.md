@@ -1,3 +1,11 @@
+So, up front, this was a quick hack job, but it is working correctly for me. I plan a future update to expose more settings via the sillytavern API UI, they are already available through the API with default values set. 
+
+The standard install directions should still be valid, my changes are primarily to the api.py file, but I also made some changes to a number of other files to allow for a config file to specificy which cuda GPU to use, or if a GPU should not be used. If you have any issues installing, check any information on the main styleTTS2 git, nothing I have changed should affect installation. 
+
+I'm currently running this on an old 970 with 4gb of memory, and on this old hardware it generates audio around 20-30x faster than listening speed. It was about 60x listening speed when running on my 3080(About 10 seconds to generate a ten minute clip). 
+
+------ Original Readme ---------------------------------------------------------------------------------------------------------------------------
+
 # StyleTTS 2: Towards Human-Level Text-to-Speech through Style Diffusion and Adversarial Training with Large Speech Language Models
 
 ### Yinghao Aaron Li, Cong Han, Vinay S. Raghavan, Gavin Mischler, Nima Mesgarani
