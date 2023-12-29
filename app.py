@@ -10,9 +10,31 @@ import pickle
 theme = gr.themes.Base(
     font=[gr.themes.GoogleFont('Libre Franklin'), gr.themes.GoogleFont('Public Sans'), 'system-ui', 'sans-serif'],
 )
-voicelist = ['f-us-1', 'f-us-2', 'f-us-3', 'f-us-4', 'm-us-1', 'm-us-2', 'm-us-3', 'm-us-4']
+voicelist = ['f-us-1', 'f-us-2', 'f-us-3', 'f-us-4', 'm-us-1', 'm-us-2', 'm-us-3', 'm-us-4', 'untitled' , 'ironmouse']
 voices = {}
 import phonemizer
+
+import yaml
+
+# Load GPU config from file
+with open('gpu_config.yml', 'r') as file:
+    gpu_config = yaml.safe_load(file)
+
+# Extract GPU device ID from config
+gpu_device_id = gpu_config.get('gpu_device_id', 0)
+
+# Check if CUDA is available
+if torch.cuda.is_available() and gpu_device_id != 999:
+    # Set the device to the specified GPU
+    torch.cuda.set_device(gpu_device_id)
+    device = torch.device('cuda')
+else:
+    # If CUDA is not available or GPU ID is 999, use CPU
+    device = torch.device('cpu')
+
+print(f"Selected device: {device}")
+
+
 global_phonemizer = phonemizer.backend.EspeakBackend(language='en-us', preserve_punctuation=True,  with_stress=True)
 # todo: cache computed style, load using pickle
 # if os.path.exists('voices.pkl'):
@@ -47,7 +69,7 @@ def ljsynthesize(text):
     # if global_phonemizer.phonemize([text]) > 300:
     if len(text) > 400:
         raise gr.Error("Text must be under 400 characters")
-    noise = torch.randn(1,1,256).to('cuda' if torch.cuda.is_available() else 'cpu')
+    noise = torch.randn(1,1,256).to(device)
     return (24000, ljinference.inference(text, noise, diffusion_steps=7, embedding_scale=1))
 
 
@@ -61,7 +83,7 @@ with gr.Blocks() as vctk: # just realized it isn't vctk but libritts but i'm too
         with gr.Column(scale=1):
             btn = gr.Button("Synthesize", variant="primary")
             audio = gr.Audio(interactive=False, label="Synthesized Audio")
-            btn.click(synthesize, inputs=[inp, voice, multispeakersteps], outputs=[audio], concurrency_limit=4)
+            btn.click(synthesize, inputs=[inp, voice, multispeakersteps], outputs=[audio])
 with gr.Blocks() as clone:
     with gr.Row():
         with gr.Column(scale=1):
@@ -71,7 +93,7 @@ with gr.Blocks() as clone:
         with gr.Column(scale=1):
             clbtn = gr.Button("Synthesize", variant="primary")
             claudio = gr.Audio(interactive=False, label="Synthesized Audio")
-            clbtn.click(clsynthesize, inputs=[clinp, clvoice, vcsteps], outputs=[claudio], concurrency_limit=4)
+            clbtn.click(clsynthesize, inputs=[clinp, clvoice, vcsteps], outputs=[claudio])
 with gr.Blocks() as lj:
     with gr.Row():
         with gr.Column(scale=1):
@@ -79,7 +101,7 @@ with gr.Blocks() as lj:
         with gr.Column(scale=1):
             ljbtn = gr.Button("Synthesize", variant="primary")
             ljaudio = gr.Audio(interactive=False, label="Synthesized Audio")
-            ljbtn.click(ljsynthesize, inputs=[ljinp], outputs=[ljaudio], concurrency_limit=4)
+            ljbtn.click(ljsynthesize, inputs=[ljinp], outputs=[ljaudio])
 with gr.Blocks(title="StyleTTS 2", css="footer{display:none !important}", theme=theme) as demo:
     gr.Markdown("""# StyleTTS 2
 

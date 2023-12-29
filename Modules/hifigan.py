@@ -8,6 +8,25 @@ from .utils import init_weights, get_padding
 import math
 import random
 import numpy as np 
+import yaml
+
+# Load GPU config from file
+with open('gpu_config.yml', 'r') as file:
+    gpu_config = yaml.safe_load(file)
+
+# Extract GPU device ID from config
+gpu_device_id = gpu_config.get('gpu_device_id', 0)
+
+# Check if CUDA is available
+if torch.cuda.is_available() and gpu_device_id != 999:
+    # Set the device to the specified GPU
+    torch.cuda.set_device(gpu_device_id)
+    device = torch.device('cuda')
+else:
+    # If CUDA is not available or GPU ID is 999, use CPU
+    device = torch.device('cpu')
+
+print(f"Selected device: {device}")
 
 LRELU_SLOPE = 0.1
 
@@ -450,9 +469,9 @@ class Decoder(nn.Module):
             downlist = [0, 3, 7, 15]
             N_down = downlist[random.randint(0, 3)]
             if F0_down:
-                F0_curve = nn.functional.conv1d(F0_curve.unsqueeze(1), torch.ones(1, 1, F0_down).to('cuda'), padding=F0_down//2).squeeze(1) / F0_down
+                F0_curve = nn.functional.conv1d(F0_curve.unsqueeze(1), torch.ones(1, 1, F0_down).to(device), padding=F0_down//2).squeeze(1) / F0_down
             if N_down:
-                N = nn.functional.conv1d(N.unsqueeze(1), torch.ones(1, 1, N_down).to('cuda'), padding=N_down//2).squeeze(1)  / N_down
+                N = nn.functional.conv1d(N.unsqueeze(1), torch.ones(1, 1, N_down).to(device), padding=N_down//2).squeeze(1)  / N_down
 
         
         F0 = self.F0_conv(F0_curve.unsqueeze(1))

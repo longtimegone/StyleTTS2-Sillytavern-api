@@ -3,6 +3,8 @@ import nltk
 nltk.download('punkt')
 from scipy.io.wavfile import write
 import torch
+import yaml
+
 torch.manual_seed(0)
 torch.backends.cudnn.benchmark = False
 torch.backends.cudnn.deterministic = True
@@ -52,7 +54,7 @@ def compute_style(path):
     audio, index = librosa.effects.trim(wave, top_db=30)
     if sr != 24000:
         audio = librosa.resample(audio, sr, 24000)
-    mel_tensor = preprocess(audio).to(device)
+    mel_tensor = preprocess(audio).to(device)  # Assign the result to mel_tensor
 
     with torch.no_grad():
         ref_s = model.style_encoder(mel_tensor.unsqueeze(1))
@@ -60,13 +62,27 @@ def compute_style(path):
 
     return torch.cat([ref_s, ref_p], dim=1)
 
-device = 'cpu'
-if torch.cuda.is_available():
-    device = 'cuda'
-elif torch.backends.mps.is_available():
-    # print("MPS would be available but cannot be used rn")
-    pass
-    # device = 'mps'
+
+import yaml
+
+# Load GPU config from file
+with open('gpu_config.yml', 'r') as file:
+    gpu_config = yaml.safe_load(file)
+
+# Extract GPU device ID from config
+gpu_device_id = gpu_config.get('gpu_device_id', 0)
+
+# Check if CUDA is available
+if torch.cuda.is_available() and gpu_device_id != 999:
+    # Set the device to the specified GPU
+    torch.cuda.set_device(gpu_device_id)
+    device = torch.device('cuda')
+else:
+    # If CUDA is not available or GPU ID is 999, use CPU
+    device = torch.device('cpu')
+
+#print(f"Selected device: {device}")
+
 
 import phonemizer
 global_phonemizer = phonemizer.backend.EspeakBackend(language='en-us', preserve_punctuation=True,  with_stress=True)
@@ -98,6 +114,19 @@ _ = [model[key].to(device) for key in model]
 # params_whole = torch.load("Models/LibriTTS/epochs_2nd_00020.pth", map_location='cpu')
 params_whole = torch.load(str(cached_path("hf://yl4579/StyleTTS2-LibriTTS/Models/LibriTTS/epochs_2nd_00020.pth")), map_location='cpu')
 params = params_whole['net']
+
+# Move parameters to the desired device
+def recursive_to(device, nested_dict):
+    for key, value in nested_dict.items():
+        if isinstance(value, dict):
+            nested_dict[key] = recursive_to(device, value)
+        else:
+            nested_dict[key] = value.to(device)
+    return nested_dict
+
+# Move all tensors in the nested OrderedDict to the desired device
+params = recursive_to(device, params)
+
 
 for key in model:
     if key in params:
@@ -133,11 +162,21 @@ def inference(text, ref_s, alpha = 0.3, beta = 0.7, diffusion_steps=5, embedding
     ps = ' '.join(ps)
     tokens = textclenaer(ps)
     tokens.insert(0, 0)
-    tokens = torch.LongTensor(tokens).to(device).unsqueeze(0)
+    
+    device = torch.device(f"cuda:{gpu_device_id}" if torch.cuda.is_available() else "cpu")
+
+    # Create or load your tokens tensor
+    tokens = torch.LongTensor(tokens).unsqueeze(0).to(device)
 
     with torch.no_grad():
         input_lengths = torch.LongTensor([tokens.shape[-1]]).to(device)
         text_mask = length_to_mask(input_lengths).to(device)
+        
+        print('inference settings')
+        print(f"alpha: {alpha}")
+        print(f"beta: {beta}")
+        print(f"steps: {diffusion_steps}")
+        print(f"scale: {embedding_scale}")
 
         t_en = model.text_encoder(tokens, input_lengths, text_mask)
         bert_dur = model.bert(tokens, attention_mask=(~text_mask).int())

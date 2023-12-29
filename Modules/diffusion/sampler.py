@@ -17,7 +17,7 @@ Diffusion Training
 
 
 class Distribution:
-    def __call__(self, num_samples: int, device: torch.device):
+    def __call__(self, num_samples: int, device: torch.device):  #
         raise NotImplementedError()
 
 
@@ -93,6 +93,9 @@ def to_batch(
     # If x provided use the same for all batch items
     if exists(x):
         xs = torch.full(size=(batch_size,), fill_value=x).to(device)
+        #print('Tensor locations')
+        #print(xs.device)
+
     assert exists(xs)
     return xs
 

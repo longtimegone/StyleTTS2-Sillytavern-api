@@ -34,7 +34,23 @@ from text_utils import TextCleaner
 textclenaer = TextCleaner()
 
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+# Load GPU config from file
+with open('gpu_config.yml', 'r') as file:
+    gpu_config = yaml.safe_load(file)
+
+# Extract GPU device ID from config
+gpu_device_id = gpu_config.get('gpu_device_id', 0)
+
+# Check if CUDA is available
+if torch.cuda.is_available() and gpu_device_id != 999:
+    # Set the device to the specified GPU
+    torch.cuda.set_device(gpu_device_id)
+    device = torch.device('cuda')
+else:
+    # If CUDA is not available or GPU ID is 999, use CPU
+    device = torch.device('cpu')
+
+#print(f"Selected device: {device}")
 
 to_mel = torchaudio.transforms.MelSpectrogram(
     n_mels=80, n_fft=2048, win_length=1200, hop_length=300)
