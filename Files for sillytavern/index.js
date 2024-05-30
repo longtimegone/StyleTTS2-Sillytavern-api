@@ -1,6 +1,6 @@
-import { callPopup, cancelTtsPlay, eventSource, event_types, name2, saveSettingsDebounced } from '../../../script.js';
+import { callPopup, cancelTtsPlay, eventSource, event_types, name2, saveSettingsDebounced, substituteParams } from '../../../script.js';
 import { ModuleWorkerWrapper, doExtrasFetch, extension_settings, getApiUrl, getContext, modules } from '../../extensions.js';
-import { delay, escapeRegex, getStringHash } from '../../utils.js';
+import { delay, escapeRegex, getBase64Async, getStringHash, onlyUnique } from '../../utils.js';
 import { EdgeTtsProvider } from './edge.js';
 import { ElevenLabsTtsProvider } from './elevenlabs.js';
 import { SileroTtsProvider } from './silerotts.js';
@@ -8,18 +8,23 @@ import { CoquiTtsProvider } from './coqui.js';
 import { SystemTtsProvider } from './system.js';
 import { NovelTtsProvider } from './novel.js';
 import { power_user } from '../../power-user.js';
-import { registerSlashCommand } from '../../slash-commands.js';
 import { OpenAITtsProvider } from './openai.js';
 import { XTTSTtsProvider } from './xtts.js';
+import { AllTalkTtsProvider } from './alltalk.js';
 import { StyleTtsProvider } from './styletts2.js';
+import { SpeechT5TtsProvider } from './speecht5.js';
+import { SlashCommandParser } from '../../slash-commands/SlashCommandParser.js';
+import { SlashCommand } from '../../slash-commands/SlashCommand.js';
+import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from '../../slash-commands/SlashCommandArgument.js';
 export { talkingAnimation };
 
 const UPDATE_INTERVAL = 1000;
 
 let voiceMapEntries = [];
 let voiceMap = {}; // {charName:voiceid, charName2:voiceid2}
-let storedvalue = false;
+let talkingHeadState = false;
 let lastChatId = null;
+let lastMessage = null;
 let lastMessageHash = null;
 
 const DEFAULT_VOICE_MARKER = '[Default Voice]';
@@ -66,21 +71,22 @@ export function getPreviewString(lang) {
     return previewStrings[lang] ?? fallbackPreview;
 }
 
-let ttsProviders = {
+const ttsProviders = {
     ElevenLabs: ElevenLabsTtsProvider,
     Silero: SileroTtsProvider,
     XTTSv2: XTTSTtsProvider,
-    StyleTTSv2: StyleTtsProvider,
     System: SystemTtsProvider,
     Coqui: CoquiTtsProvider,
     Edge: EdgeTtsProvider,
     Novel: NovelTtsProvider,
     OpenAI: OpenAITtsProvider,
+    AllTalk: AllTalkTtsProvider,
+    StyleTTSv2: StyleTtsProvider,
+    SpeechT5: SpeechT5TtsProvider,
 };
 let ttsProvider;
 let ttsProviderName;
 
-let ttsLastMessage = null;
 
 async function onNarrateOneMessage() {
     audioElement.src = '/sounds/silence.mp3';
@@ -128,103 +134,13 @@ async function onNarrateText(args, text) {
 }
 
 async function moduleWorker() {
-    // Primarily determining when to add new chat to the TTS queue
-    const enabled = $('#tts_enabled').is(':checked');
-    $('body').toggleClass('tts', enabled);
-    if (!enabled) {
+    if (!extension_settings.tts.enabled) {
         return;
     }
-
-    const context = getContext();
-    const chat = context.chat;
 
     processTtsQueue();
     processAudioJobQueue();
     updateUiAudioPlayState();
-
-    // Auto generation is disabled
-    if (extension_settings.tts.auto_generation == false) {
-        return;
-    }
-
-    // no characters or group selected
-    if (!context.groupId && context.characterId === undefined) {
-        return;
-    }
-
-    // Chat changed
-    if (
-        context.chatId !== lastChatId
-    ) {
-        currentMessageNumber = context.chat.length ? context.chat.length : 0;
-        saveLastValues();
-
-        // Force to speak on the first message in the new chat
-        if (context.chat.length === 1) {
-            lastMessageHash = -1;
-        }
-
-        return;
-    }
-
-    // take the count of messages
-    let lastMessageNumber = context.chat.length ? context.chat.length : 0;
-
-    // There's no new messages
-    let diff = lastMessageNumber - currentMessageNumber;
-    let hashNew = getStringHash((chat.length && chat[chat.length - 1].mes) ?? '');
-
-    // if messages got deleted, diff will be < 0
-    if (diff < 0) {
-        // necessary actions will be taken by the onChatDeleted() handler
-        return;
-    }
-
-    // if no new messages, or same message, or same message hash, do nothing
-    if (diff == 0 && hashNew === lastMessageHash) {
-        return;
-    }
-
-    // If streaming, wait for streaming to finish before processing new messages
-    if (context.streamingProcessor && !context.streamingProcessor.isFinished) {
-        return;
-    }
-
-    // clone message object, as things go haywire if message object is altered below (it's passed by reference)
-    const message = structuredClone(chat[chat.length - 1]);
-
-    // if last message within current message, message got extended. only send diff to TTS.
-    if (ttsLastMessage !== null && message.mes.indexOf(ttsLastMessage) !== -1) {
-        let tmp = message.mes;
-        message.mes = message.mes.replace(ttsLastMessage, '');
-        ttsLastMessage = tmp;
-    } else {
-        ttsLastMessage = message.mes;
-    }
-
-    // We're currently swiping. Don't generate voice
-    if (!message || message.mes === '...' || message.mes === '') {
-        return;
-    }
-
-    // Don't generate if message doesn't have a display text
-    if (extension_settings.tts.narrate_translated_only && !(message?.extra?.display_text)) {
-        return;
-    }
-
-    // Don't generate if message is a user message and user message narration is disabled
-    if (message.is_user && !extension_settings.tts.narrate_user) {
-        return;
-    }
-
-    // New messages, add new chat to history
-    lastMessageHash = hashNew;
-    currentMessageNumber = lastMessageNumber;
-
-    console.debug(
-        `Adding message from ${message.name} for TTS processing: "${message.mes}"`,
-    );
-    ttsJobQueue.push(message);
 }
 
 function talkingAnimation(switchValue) {
@@ -236,11 +152,11 @@ function talkingAnimation(switchValue) {
     const apiUrl = getApiUrl();
     const animationType = switchValue ? 'start' : 'stop';
 
-    if (switchValue !== storedvalue) {
+    if (switchValue !== talkingHeadState) {
         try {
             console.log(animationType + ' Talking Animation');
             doExtrasFetch(`${apiUrl}/api/talkinghead/${animationType}_talking`);
-            storedvalue = switchValue; // Update the storedvalue to the current switchValue
+            talkingHeadState = switchValue;
         } catch (error) {
             // Handle the error here or simply ignore it to prevent logging
         }
@@ -287,7 +203,6 @@ function debugTtsPlayback() {
         {
             'ttsProviderName': ttsProviderName,
             'voiceMap': voiceMap,
-            'currentMessageNumber': currentMessageNumber,
             'audioPaused': audioPaused,
             'audioJobQueue': audioJobQueue,
             'currentAudioJob': currentAudioJob,
@@ -298,7 +213,7 @@ function debugTtsPlayback() {
         },
     ));
 }
-window.debugTtsPlayback = debugTtsPlayback;
+window['debugTtsPlayback'] = debugTtsPlayback;
 
 //##################//
 //   Audio Control  //
@@ -308,25 +223,47 @@ let audioElement = new Audio();
 audioElement.id = 'tts_audio';
 audioElement.autoplay = true;
 
+/**
+ * @type AudioJob[] Audio job queue
+ * @typedef {{audioBlob: Blob | string, char: string}} AudioJob Audio job object
+ */
 let audioJobQueue = [];
+/**
+ * @type AudioJob Current audio job
+ */
 let currentAudioJob;
 let audioPaused = false;
 let audioQueueProcessorReady = true;
 
-async function playAudioData(audioBlob) {
+/**
+ * Play audio data from audio job object.
+ * @param {AudioJob} audioJob Audio job object
+ * @returns {Promise<void>} Promise that resolves when audio playback is started
+ */
+async function playAudioData(audioJob) {
+    const { audioBlob, char } = audioJob;
     // Since current audio job can be cancelled, don't playback if it is null
     if (currentAudioJob == null) {
         console.log('Cancelled TTS playback because currentAudioJob was null');
     }
-    const reader = new FileReader();
-    reader.onload = function (e) {
-        const srcUrl = e.target.result;
+    if (audioBlob instanceof Blob) {
+        const srcUrl = await getBase64Async(audioBlob);
+
+        // VRM lip sync
+        if (extension_settings.vrm?.enabled && typeof window['vrmLipSync'] === 'function') {
+            await window['vrmLipSync'](audioBlob, char);
+        }
+
         audioElement.src = srcUrl;
-    };
-    reader.readAsDataURL(audioBlob);
+    } else if (typeof audioBlob === 'string') {
+        audioElement.src = audioBlob;
+    } else {
+        throw `TTS received invalid audio data type ${typeof audioBlob}`;
+    }
     audioElement.addEventListener('ended', completeCurrentAudioJob);
     audioElement.addEventListener('canplay', () => {
         console.debug('Starting TTS playback');
+        audioElement.playbackRate = extension_settings.tts.playback_rate;
         audioElement.play();
     });
 }
@@ -334,7 +271,7 @@ async function playAudioData(audioBlob) {
 window['tts_preview'] = function (id) {
     const audio = document.getElementById(id);
 
-    if (audio && !$(audio).data('disabled')) {
+    if (audio instanceof HTMLAudioElement && !$(audio).data('disabled')) {
         audio.play();
     }
     else {
@@ -418,12 +355,16 @@ function completeCurrentAudioJob() {
  * Accepts an HTTP response containing audio/mpeg data, and puts the data as a Blob() on the queue for playback
  * @param {Response} response
  */
-async function addAudioJob(response) {
-    const audioData = await response.blob();
-    if (!audioData.type.startsWith('audio/')) {
-        throw `TTS received HTTP response with invalid data format. Expecting audio/*, got ${audioData.type}`;
+async function addAudioJob(response, char) {
+    if (typeof response === 'string') {
+        audioJobQueue.push({ audioBlob: response, char: char });
+    } else {
+        const audioData = await response.blob();
+        if (!audioData.type.startsWith('audio/')) {
+            throw `TTS received HTTP response with invalid data format. Expecting audio/*, got ${audioData.type}`;
+        }
+        audioJobQueue.push({ audioBlob: audioData, char: char });
     }
-    audioJobQueue.push(audioData);
     console.debug('Pushed audio job to queue.');
 }
 
@@ -434,10 +375,11 @@ async function processAudioJobQueue() {
     }
     try {
         audioQueueProcessorReady = false;
-        currentAudioJob = audioJobQueue.pop();
+        currentAudioJob = audioJobQueue.shift();
         playAudioData(currentAudioJob);
         talkingAnimation(true);
     } catch (error) {
+        toastr.error(error.toString());
         console.error(error);
         audioQueueProcessorReady = true;
     }
@@ -449,29 +391,32 @@ async function processAudioJobQueue() {
 
 let ttsJobQueue = [];
 let currentTtsJob; // Null if nothing is currently being processed
-let currentMessageNumber = 0;
 
 function completeTtsJob() {
     console.info(`Current TTS job for ${currentTtsJob?.name} completed.`);
     currentTtsJob = null;
 }
 
-function saveLastValues() {
-    const context = getContext();
-    lastChatId = context.chatId;
-    lastMessageHash = getStringHash(
-        (context.chat.length && context.chat[context.chat.length - 1].mes) ?? '',
-    );
-}
-
 async function tts(text, voiceId, char) {
+    async function processResponse(response) {
+        // RVC injection
+        if (extension_settings.rvc.enabled && typeof window['rvcVoiceConversion'] === 'function')
+            response = await window['rvcVoiceConversion'](response, char, text);
+
+        await addAudioJob(response, char);
+    }
+
     let response = await ttsProvider.generateTts(text, voiceId);
 
-    // RVC injection
-    if (extension_settings.rvc.enabled && typeof window['rvcVoiceConversion'] === 'function')
-        response = await window['rvcVoiceConversion'](response, char, text);
+    // If async generator, process every chunk as it comes in
+    if (typeof response[Symbol.asyncIterator] === 'function') {
+        for await (const chunk of response) {
+            await processResponse(chunk);
+        }
+    } else {
+        await processResponse(response);
+    }
 
-    addAudioJob(response);
     completeTtsJob();
 }
 
@@ -485,17 +430,26 @@ async function processTtsQueue() {
     currentTtsJob = ttsJobQueue.shift();
     let text = extension_settings.tts.narrate_translated_only ? (currentTtsJob?.extra?.display_text || currentTtsJob.mes) : currentTtsJob.mes;
 
+    // Substitute macros
+    text = substituteParams(text);
+
     if (extension_settings.tts.skip_codeblocks) {
         text = text.replace(/^\s{4}.*$/gm, '').trim();
         text = text.replace(/```.*?```/gs, '').trim();
     }
 
-    text = extension_settings.tts.narrate_dialogues_only
-        ? text.replace(/\*[^*]*?(\*|$)/g, '').trim() // remove asterisks content
-        : text.replaceAll('*', '').trim(); // remove just the asterisks
+    if (extension_settings.tts.skip_tags) {
+        text = text.replace(/<.*?>.*?<\/.*?>/g, '').trim();
+    }
+
+    if (!extension_settings.tts.pass_asterisks) {
+        text = extension_settings.tts.narrate_dialogues_only
+            ? text.replace(/\*[^*]*?(\*|$)/g, '').trim() // remove asterisks content
+            : text.replaceAll('*', '').trim(); // remove just the asterisks
+    }
 
     if (extension_settings.tts.narrate_quoted_only) {
-        const special_quotes = /[“”]/g; // Extend this regex to include other special quotes
+        const special_quotes = /[“”«»]/g; // Extend this regex to include other special quotes
         text = text.replace(special_quotes, '"');
         const matches = text.match(/".*?"/g); // Matches text inside double quotes, non-greedily
         const partJoiner = (ttsProvider?.separator || ' ... ');
@@ -536,8 +490,9 @@ async function processTtsQueue() {
             toastr.error(`Specified voice for ${char} was not found. Check the TTS extension settings.`);
             throw `Unable to attain voiceId for ${char}`;
         }
-        tts(text, voiceId, char);
+        await tts(text, voiceId, char);
     } catch (error) {
+        toastr.error(error.toString());
         console.error(error);
         currentTtsJob = null;
     }
@@ -549,7 +504,7 @@ async function playFullConversation() {
     const chat = context.chat;
     ttsJobQueue = chat;
 }
-window.playFullConversation = playFullConversation;
+window['playFullConversation'] = playFullConversation;
 
 //#############################//
 //  Extension UI and Settings  //
@@ -574,6 +529,13 @@ function loadSettings() {
     $('#tts_auto_generation').prop('checked', extension_settings.tts.auto_generation);
     $('#tts_narrate_translated_only').prop('checked', extension_settings.tts.narrate_translated_only);
     $('#tts_narrate_user').prop('checked', extension_settings.tts.narrate_user);
+    $('#tts_pass_asterisks').prop('checked', extension_settings.tts.pass_asterisks);
+    $('#tts_skip_codeblocks').prop('checked', extension_settings.tts.skip_codeblocks);
+    $('#tts_skip_tags').prop('checked', extension_settings.tts.skip_tags);
+    $('#playback_rate').val(extension_settings.tts.playback_rate);
+    $('#playback_rate_counter').val(Number(extension_settings.tts.playback_rate).toFixed(2));
+    $('#playback_rate_block').toggle(extension_settings.tts.currentProvider !== 'System');
+
     $('body').toggleClass('tts', extension_settings.tts.enabled);
 }
 
@@ -583,6 +545,7 @@ const defaultSettings = {
     currentProvider: 'ElevenLabs',
     auto_generation: true,
     narrate_user: false,
+    playback_rate: 1,
 };
 
 function setTtsStatus(status, success) {
@@ -606,6 +569,7 @@ function onRefreshClick() {
         initVoiceMap();
         updateVoiceMap();
     }).catch(error => {
+        toastr.error(error.toString());
         console.error(error);
         setTtsStatus(error, false);
     });
@@ -652,6 +616,17 @@ function onSkipCodeblocksClick() {
     saveSettingsDebounced();
 }
 
+function onSkipTagsClick() {
+    extension_settings.tts.skip_tags = !!$('#tts_skip_tags').prop('checked');
+    saveSettingsDebounced();
+}
+
+function onPassAsterisksClick() {
+    extension_settings.tts.pass_asterisks = !!$('#tts_pass_asterisks').prop('checked');
+    saveSettingsDebounced();
+    console.log('setting pass asterisks', extension_settings.tts.pass_asterisks);
+}
+
 //##############//
 // TTS Provider //
 //##############//
@@ -682,6 +657,7 @@ async function loadTtsProvider(provider) {
 function onTtsProviderChange() {
     const ttsProviderSelection = $('#tts_provider').val();
     extension_settings.tts.currentProvider = ttsProviderSelection;
+    $('#playback_rate_block').toggle(extension_settings.tts.currentProvider !== 'System');
     loadTtsProvider(ttsProviderSelection);
 }
 
@@ -702,26 +678,103 @@ async function onChatChanged() {
     await resetTtsPlayback();
     const voiceMapInit = initVoiceMap();
     await Promise.race([voiceMapInit, delay(1000)]);
-    ttsLastMessage = null;
+    lastMessage = null;
 }
 
-async function onChatDeleted() {
+async function onMessageEvent(messageId) {
+    // If TTS is disabled, do nothing
+    if (!extension_settings.tts.enabled) {
+        return;
+    }
+
+    // Auto generation is disabled
+    if (!extension_settings.tts.auto_generation) {
+        return;
+    }
+
+    const context = getContext();
+
+    // no characters or group selected
+    if (!context.groupId && context.characterId === undefined) {
+        return;
+    }
+
+    // Chat changed
+    if (context.chatId !== lastChatId) {
+        lastChatId = context.chatId;
+        lastMessageHash = getStringHash(context.chat[messageId]?.mes ?? '');
+
+        // Force to speak on the first message in the new chat
+        if (context.chat.length === 1) {
+            lastMessageHash = -1;
+        }
+    }
+
+    // clone message object, as things go haywire if message object is altered below (it's passed by reference)
+    const message = structuredClone(context.chat[messageId]);
+    const hashNew = getStringHash(message?.mes ?? '');
+
+    // if no new messages, or same message, or same message hash, do nothing
+    if (hashNew === lastMessageHash) {
+        return;
+    }
+
+    const isLastMessageInCurrent = () =>
+        lastMessage &&
+        typeof lastMessage === 'object' &&
+        message.swipe_id === lastMessage.swipe_id &&
+        message.name === lastMessage.name  &&
+        message.is_user === lastMessage.is_user  &&
+        message.mes.indexOf(lastMessage.mes) !== -1;
+
+    // if last message within current message, message got extended. only send diff to TTS.
+    if (isLastMessageInCurrent()) {
+        const tmp = structuredClone(message);
+        message.mes = message.mes.replace(lastMessage.mes, '');
+        lastMessage = tmp;
+    } else {
+        lastMessage = structuredClone(message);
+    }
+
+    // We're currently swiping. Don't generate voice
+    if (!message || message.mes === '...' || message.mes === '') {
+        return;
+    }
+
+    // Don't generate if message doesn't have a display text
+    if (extension_settings.tts.narrate_translated_only && !(message?.extra?.display_text)) {
+        return;
+    }
+
+    // Don't generate if message is a user message and user message narration is disabled
+    if (message.is_user && !extension_settings.tts.narrate_user) {
+        return;
+    }
+
+    // New messages, add new chat to history
+    lastMessageHash = hashNew;
+    lastChatId = context.chatId;
+
+    console.debug(`Adding message from ${message.name} for TTS processing: "${message.mes}"`);
+    ttsJobQueue.push(message);
+}
+
+async function onMessageDeleted() {
     const context = getContext();
 
     // update internal references to new last message
     lastChatId = context.chatId;
-    currentMessageNumber = context.chat.length ? context.chat.length : 0;
 
     // compare against lastMessageHash. If it's the same, we did not delete the last chat item, so no need to reset tts queue
-    let messageHash = getStringHash((context.chat.length && context.chat[context.chat.length - 1].mes) ?? '');
+    const messageHash = getStringHash((context.chat.length && context.chat[context.chat.length - 1].mes) ?? '');
     if (messageHash === lastMessageHash) {
         return;
     }
     lastMessageHash = messageHash;
-    ttsLastMessage = (context.chat.length && context.chat[context.chat.length - 1].mes) ?? '';
+    lastMessage = context.chat.length ? structuredClone(context.chat[context.chat.length - 1]) : null;
 
     // stop any tts playback since message might not exist anymore
-    await resetTtsPlayback();
+    resetTtsPlayback();
 }
 
 /**
@@ -735,7 +788,7 @@ function getCharacters(unrestricted) {
     if (unrestricted) {
         const names = context.characters.map(char => char.name);
         names.unshift(DEFAULT_VOICE_MARKER);
-        return names;
+        return names.filter(onlyUnique);
     }
 
     let characters = [];
@@ -750,14 +803,13 @@ function getCharacters(unrestricted) {
         characters.push(context.name1);
         const group = context.groups.find(group => context.groupId == group.id);
         for (let member of group.members) {
-            // Remove suffix
-            if (member.endsWith('.png')) {
-                member = member.slice(0, -4);
+            const character = context.characters.find(char => char.avatar == member);
+            if (character) {
+                characters.push(character.name);
             }
-            characters.push(member);
         }
     }
-    return characters;
+    return characters.filter(onlyUnique);
 }
 
 function sanitizeId(input) {
@@ -970,6 +1022,28 @@ $(document).ready(function () {
                             <input type="checkbox" id="tts_skip_codeblocks">
                             <small>Skip codeblocks</small>
                         </label>
+                        <label class="checkbox_label" for="tts_skip_tags">
+                            <input type="checkbox" id="tts_skip_tags">
+                            <small>Skip &lt;tagged&gt; blocks</small>
+                        </label>
+                        <label class="checkbox_label" for="tts_pass_asterisks">
+                        <input type="checkbox" id="tts_pass_asterisks">
+                        <small>Pass Asterisks to TTS Engine</small>
+                        </label>
+                    </div>
+                    <div id="playback_rate_block" class="range-block">
+                        <hr>
+                        <div class="range-block-title justifyLeft" data-i18n="Audio Playback Speed">
+                            <small>Audio Playback Speed</small>
+                        </div>
+                        <div class="range-block-range-and-counter">
+                            <div class="range-block-range">
+                                <input type="range" id="playback_rate" name="volume" min="0" max="3" step="0.05">
+                            </div>
+                            <div class="range-block-counter">
+                                <input type="number" min="0" max="3" step="0.05" data-for="playback_rate" id="playback_rate_counter">
+                            </div>
+                        </div>
                     </div>
                     <div id="tts_voicemap_block">
                     </div>
@@ -991,8 +1065,19 @@ $(document).ready(function () {
         $('#tts_narrate_quoted').on('click', onNarrateQuotedClick);
         $('#tts_narrate_translated_only').on('click', onNarrateTranslatedOnlyClick);
         $('#tts_skip_codeblocks').on('click', onSkipCodeblocksClick);
+        $('#tts_skip_tags').on('click', onSkipTagsClick);
+        $('#tts_pass_asterisks').on('click', onPassAsterisksClick);
         $('#tts_auto_generation').on('click', onAutoGenerationClick);
         $('#tts_narrate_user').on('click', onNarrateUserClick);
+
+        $('#playback_rate').on('input', function () {
+            const value = $(this).val();
+            const formattedValue = Number(value).toFixed(2);
+            extension_settings.tts.playback_rate = value;
+            $('#playback_rate_counter').val(formattedValue);
+            saveSettingsDebounced();
+        });
+
         $('#tts_voices').on('click', onTtsVoicesClick);
         for (const provider in ttsProviders) {
             $('#tts_provider').append($('<option />').val(provider).text(provider));
@@ -1008,8 +1093,40 @@ $(document).ready(function () {
     setInterval(wrapper.update.bind(wrapper), UPDATE_INTERVAL); // Init depends on all the things
     eventSource.on(event_types.MESSAGE_SWIPED, resetTtsPlayback);
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
-    eventSource.on(event_types.MESSAGE_DELETED, onChatDeleted);
+    eventSource.on(event_types.MESSAGE_DELETED, onMessageDeleted);
     eventSource.on(event_types.GROUP_UPDATED, onChatChanged);
-    registerSlashCommand('speak', onNarrateText, ['narrate', 'tts'], '<span class="monospace">(text)</span>  – narrate any text using currently selected character\'s voice. Use voice="Character Name" argument to set other voice from the voice map, example: <tt>/speak voice="Donald Duck" Quack!</tt>', true, true);
+    eventSource.makeLast(event_types.CHARACTER_MESSAGE_RENDERED, onMessageEvent);
+    eventSource.makeLast(event_types.USER_MESSAGE_RENDERED, onMessageEvent);
+    SlashCommandParser.addCommandObject(SlashCommand.fromProps({ name: 'speak',
+        callback: onNarrateText,
+        aliases: ['narrate', 'tts'],
+        namedArgumentList: [
+            new SlashCommandNamedArgument(
+                'voice', 'character voice name', [ARGUMENT_TYPE.STRING], false,
+            ),
+        ],
+        unnamedArgumentList: [
+            new SlashCommandArgument(
+                'text', [ARGUMENT_TYPE.STRING], true,
+            ),
+        ],
+        helpString: `
+            <div>
+                Narrate any text using currently selected character's voice.
+            </div>
+            <div>
+                Use <code>voice="Character Name"</code> argument to set other voice from the voice map.
+            </div>
+            <div>
+                <strong>Example:</strong>
+                <ul>
+                    <li>
+                        <pre><code>/speak voice="Donald Duck" Quack!</code></pre>
+                    </li>
+                </ul>
+            </div>
+        `,
+    }));
+
     document.body.appendChild(audioElement);
 });
