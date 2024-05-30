@@ -161,14 +161,15 @@ def serve_wav():
         return jsonify(error_response), 400
     text = request.form['text'].strip()
     voice = request.form['voice'].strip().lower()
+
     # Extract additional variables with default values if not present
     alpha_form = request.form.get('alpha', '.3')
     alpha_float = float(alpha_form)
-    beta_form = request.form.get('beta', '.5')
+    beta_form = request.form.get('beta', '.7')
     beta_float = float(beta_form)
     diffusion_steps_form = request.form.get('diffusion_steps', '15')
     diffusion_steps_int = int(diffusion_steps_form)
-    embedding_scale_form = request.form.get('embedding_scale', '2')
+    embedding_scale_form = request.form.get('embedding_scale', '1')
     embedding_scale_float = float(embedding_scale_form)
 
     if not voice in voices:
